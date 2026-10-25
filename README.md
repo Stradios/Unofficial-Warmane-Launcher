@@ -9,7 +9,7 @@ It also works on Linux through Wine / Proton (for example Faugus).
 
 | Log in | Logged in |
 | --- | --- |
-| ![Login screen](docs/login.png) | ![Logged-in screen](docs/logged-in.png) |
+| ![Login screen](https://raw.githubusercontent.com/Stradios/Unofficial-Warmane-Launcher/refs/heads/main/gh-readme/docs/login.png) | ![Logged-in screen](https://raw.githubusercontent.com/Stradios/Unofficial-Warmane-Launcher/refs/heads/main/gh-readme/docs/logged-in.png) |
 
 ## Download and install
 
