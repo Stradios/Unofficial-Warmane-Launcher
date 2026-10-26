@@ -66,10 +66,83 @@ int main() {
   CHECK(readInstalledAccount(exe)->account == "Dan");
 
   // config
-  Config cfg{"C:\\w\\Wow.exe", "Eve"};
+  Config cfg; cfg.wowExe = "C:\\w\\Wow.exe"; cfg.account = "Eve";
   CHECK(saveConfig(d / "sub" / "config.ini", cfg));
   Config l = loadConfig(d / "sub" / "config.ini");
   CHECK(l.wowExe == cfg.wowExe && l.account == "Eve");
+
+
+  // ---- tracking what we create + uninstall
+  {
+    fs::path g = fs::temp_directory_path() / "wlnative-uninst"; fs::remove_all(g); fs::create_directories(g);
+    fs::path exe = g / "Wow.exe"; writeFile(exe, "MZ");
+    Config c; c.wowExe = exe.u8string();
+    GlueReport r; std::string e;
+    CHECK(ensureGlue(exe, tpl, r, e) && r.created.size() == 6);  // Interface, GlueXML + 4 files
+    addCreated(c, r.created); addCreated(c, r.created);
+    CHECK(c.created.size() == 6);
+    std::vector<std::string> more; CHECK(writeCreds(exe, tpl, "Zed", "pw", e, &more) && more.empty());
+    CHECK(saveConfig(g / "cfg" / "unofficial-warmane-launcher" / "config.ini", c));
+    Config back = loadConfig(g / "cfg" / "unofficial-warmane-launcher" / "config.ini");
+    CHECK(back.created == c.created && back.wowExe == c.wowExe);
+    writeFile(g / "cache" / "x.ttf", "x");  // (no dir yet: writeFile fails, fine)
+    fs::create_directories(g / "cache" / "unofficial-warmane-launcher"); writeFile(g / "cache" / "unofficial-warmane-launcher" / "f.ttf", "x");
+    // the player later adds an add-on inside Interface, and one folder that is not ours
+    fs::create_directories(g / "Interface" / "AddOns" / "MyAddon"); writeFile(g / "Interface" / "AddOns" / "MyAddon" / "x.lua", "1");
+    auto plan = makeUninstallPlan(c, tpl, g / "cfg" / "unofficial-warmane-launcher", g / "cache" / "unofficial-warmane-launcher");
+    CHECK(!plan.legacy && plan.files.size() == 4 && plan.dirs.size() == 2 && !plan.xml.empty());
+    CHECK(describePlan(plan).find("AccountLogin.xml") != std::string::npos);
+    auto log = runUninstall(plan);
+    CHECK(!fs::exists(glueDir(exe)));                                   // GlueXML and its 4 files gone
+    CHECK(fs::exists(g / "Interface" / "AddOns" / "MyAddon" / "x.lua"));  // user's add-on untouched, so Interface stays
+    CHECK(fs::exists(exe));
+    CHECK(!fs::exists(g / "cfg" / "unofficial-warmane-launcher") && !fs::exists(g / "cache" / "unofficial-warmane-launcher"));
+    CHECK(!log.empty());
+
+    // a clean game folder ends up exactly as it was
+    fs::path g2 = fs::temp_directory_path() / "wlnative-uninst2"; fs::remove_all(g2); fs::create_directories(g2);
+    fs::path exe2 = g2 / "Wow.exe"; writeFile(exe2, "MZ");
+    Config c2; c2.wowExe = exe2.u8string(); GlueReport r2;
+    CHECK(ensureGlue(exe2, tpl, r2, e)); addCreated(c2, r2.created);
+    std::vector<std::string> mk; CHECK(mkdirTracked(glueDir(exe2).parent_path() / "AddOns", &mk, e)); addCreated(c2, mk);
+    CHECK(writeCreds(exe2, tpl, "A", "b", e));
+    runUninstall(makeUninstallPlan(c2, tpl, "", ""));
+    int left = 0; for (auto& x : fs::directory_iterator(g2)) { (void)x; left++; }
+    CHECK(left == 1 && fs::exists(exe2));                               // only Wow.exe remains
+
+    // files that were already there (not created by us) are kept; their saved login is blanked
+    fs::path g3 = fs::temp_directory_path() / "wlnative-uninst3"; fs::remove_all(g3); fs::create_directories(g3 / "Interface" / "GlueXML");
+    fs::path exe3 = g3 / "Wow.exe"; writeFile(exe3, "MZ");
+    writeFile(g3 / "Interface" / "GlueXML" / "AccountLogin.lua", "-- mine");
+    Config c3; c3.wowExe = exe3.u8string(); GlueReport r3;
+    CHECK(ensureGlue(exe3, tpl, r3, e) && r3.created.size() == 3);      // the 3 missing files only
+    addCreated(c3, r3.created);
+    CHECK(writeCreds(exe3, tpl, "Q", "secret", e));
+    runUninstall(makeUninstallPlan(c3, tpl, "", ""));
+    CHECK(readFile(g3 / "Interface" / "GlueXML" / "AccountLogin.lua") == "-- mine");
+    CHECK(fs::exists(g3 / "Interface" / "GlueXML") && !fs::exists(g3 / "Interface" / "GlueXML" / "AccountLogin.xml"));
+
+    // safety: entries outside the game folder or with ".." are ignored; folders not named after us are kept
+    fs::path outside = fs::temp_directory_path() / "wlnative-outside.txt"; writeFile(outside, "keep");
+    Config c4 = c3; c4.created = {outside.u8string(), (g3 / ".." / "wlnative-outside.txt").u8string(), "/etc", g3.u8string()};
+    auto p4 = makeUninstallPlan(c4, tpl, g3 / "other", "");
+    CHECK(p4.files.empty() && p4.dirs.empty());
+    runUninstall(p4);
+    CHECK(fs::exists(outside) && fs::exists(g3) && fs::exists(g3 / "other") == false);
+    fs::create_directories(g3 / "other"); runUninstall(makeUninstallPlan(c4, tpl, g3 / "other", ""));
+    CHECK(fs::exists(g3 / "other"));
+    CHECK(isUnder("/a/b/c", "/a/b") && !isUnder("/a/b", "/a/b") && !isUnder("/a/bc", "/a/b") && !isUnder("/a/b/../x", "/a/b"));
+
+    // an older install with no record: only files identical to our bundled ones are recognised
+    fs::path g5 = fs::temp_directory_path() / "wlnative-uninst5"; fs::remove_all(g5); fs::create_directories(g5);
+    fs::path exe5 = g5 / "Wow.exe"; writeFile(exe5, "MZ"); GlueReport r5; Config c5; c5.wowExe = exe5.u8string();
+    CHECK(ensureGlue(exe5, tpl, r5, e) && writeCreds(exe5, tpl, "L", "pw", e));
+    writeFile(glueDir(exe5) / "AccountLogin.lua", "-- changed by the player");
+    auto p5 = makeUninstallPlan(c5, tpl, "", "");
+    CHECK(p5.legacy && p5.files.size() == 3);
+    runUninstall(p5);
+    CHECK(readFile(glueDir(exe5) / "AccountLogin.lua") == "-- changed by the player" && !fs::exists(glueDir(exe5) / "AccountLogin.xml"));
+  }
 
   printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
   return fails ? 1 : 0;

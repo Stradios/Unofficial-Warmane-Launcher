@@ -49,3 +49,7 @@ The whole window is one custom-drawn 1226×467 surface (Win32 + GDI+ on Windows,
 - Linux: `~/.config/unofficial-warmane-launcher/config.ini`
 
 Keys: `wow_exe=` (path to `Wow.exe`) and `account=` (only if "Remember me" is on). The password is never saved here.
+
+## Uninstall (Linux)
+
+Every folder and file the launcher newly creates inside the game folder is recorded as a `created=` line in `config.ini`. The uninstaller removes only those entries, and only if they are strictly inside the game folder (paths outside it, containing `..`, or symlinks are ignored). Folders are removed only when empty, so an `Interface` folder that now holds your add-ons stays. The saved login in `AccountLogin.xml` is blanked first. The settings and cache folders are deleted only if they are named `unofficial-warmane-launcher`. If an older version left no record, files that are byte-identical to the launcher's bundled ones are recognised instead. Run `--uninstall` from a terminal for the same thing without the window.

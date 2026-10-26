@@ -75,7 +75,7 @@ While you are logged in, your account name **and password are stored in plain te
 ## Uninstall
 
 - **Windows:** use "Apps / Installed apps", or the Start-menu uninstall shortcut. The uninstaller removes only the files the installer added (the launcher, the uninstaller, shortcuts and registry entries), never your game files, and asks whether to also delete the launcher's settings. The login files in `Interface\GlueXML` are left in place.
-- **Linux:** delete the AppImage, and `~/.config/unofficial-warmane-launcher` if you want to remove its settings.
+- **Linux:** click **Uninstall…** in the bottom-left corner of the launcher, or run `./Unofficial-Warmane-Launcher-x86_64.AppImage --uninstall` in a terminal. It shows exactly what it will remove, then deletes the login files it added to your game folder (and the `Interface` folders it created, if they are empty), blanks any saved login, and deletes its settings (`~/.config/unofficial-warmane-launcher`) and cache (`~/.cache/unofficial-warmane-launcher`). You can also tick "Also delete the AppImage file itself". Files that were already in your game folder, your add-ons, and the game itself are never touched. Add `--yes` to skip the question and `--delete-appimage` to delete the AppImage as well.
 
 ## Status
 

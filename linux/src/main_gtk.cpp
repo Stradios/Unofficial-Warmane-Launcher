@@ -36,7 +36,8 @@ static const char* FONT_FAMILY = "FuturaEF Book";
 enum HotId {
   H_NONE = 0, H_MIN, H_CLOSE, H_LOGO, H_NAV0, /* 6 items: H_NAV0..H_NAV0+5 */ H_ACCT = H_NAV0 + 8,
   H_LBBOX, H_LBGO, H_REMEMBER, H_HELP0 /* 4 */, H_PLAY = H_HELP0 + 4,
-  H_VEIL, H_SETUPBOX, H_LOCATE, H_CONTINUE, H_GITHUB, H_OPENGAME, H_OPENADDONS
+  H_VEIL, H_SETUPBOX, H_LOCATE, H_CONTINUE, H_GITHUB, H_OPENGAME, H_OPENADDONS,
+  H_UNINST, H_UNINST_APPIMG, H_UNINST_GO, H_UNINST_CANCEL, H_UNINST_CLOSE
 };
 
 // -------------------------------------------------------------------- globals
@@ -73,6 +74,11 @@ static bool g_remember = true;
 static std::string g_loginErr, g_playErr, g_playState;
 static fs::path g_wowExe;
 static logic::Config g_cfg;
+// uninstall dialog: 0 = closed, 1 = asking, 2 = finished
+static int g_uninst = 0;
+static bool g_delAppImage = false, g_noSave = false;
+static logic::UninstallPlan g_plan;
+static std::vector<std::string> g_uninstLog;
 
 // ------------------------------------------------------------------- helpers
 static void setColor(cairo_t* cr, unsigned rgb, int a = 255) {
@@ -109,7 +115,9 @@ static void openUrl(const std::string& url) {
   if (ge) g_error_free(ge);
 }
 static fs::path configPath() { return fs::path(g_get_user_config_dir()) / "unofficial-warmane-launcher" / "config.ini"; }
-static void saveCfg() { logic::saveConfig(configPath(), g_cfg); }
+static void saveCfg() { if (!g_noSave) logic::saveConfig(configPath(), g_cfg); }
+static fs::path cacheDir() { return fs::path(g_get_user_cache_dir()) / "unofficial-warmane-launcher"; }
+static const char* appImagePath() { const char* a = getenv("APPIMAGE"); return a && *a ? a : nullptr; }
 
 // ---------------------------------------------------------------- text (Pango)
 static PangoFontDescription* fnt(float px) {
@@ -278,7 +286,7 @@ static void button(cairo_t* cr, int id, const std::string& label, float x, float
 }
 
 // ------------------------------------------------------------------ the scene
-static bool setupVisible() { return !g_setupDone; }
+static bool setupVisible() { return !g_setupDone || g_uninst; }
 
 static void drawBackdrop(cairo_t* cr) {
   cairo_save(cr);
@@ -344,6 +352,14 @@ static void drawUnofficial(cairo_t* cr) {
   text(cr, link, R, WIN_H - 22, 14, h ? 0xe6d58a : 0xc1b575, 2, 0, true);
   rectLine(cr, R - w, WIN_H - 13, w, 1, h ? 0xe6d58a : 0xc1b575);
   hot(H_GITHUB, R - w - 4, WIN_H - 34, w + 8, 26);
+  if (!g_uninst) {  // small "Uninstall…" link, bottom-left
+    const std::string u = "Uninstall…";
+    float uw = textW(u, 14);
+    bool uh = g_hover == H_UNINST;
+    text(cr, u, 18, WIN_H - 22, 14, uh ? 0xe6d58a : 0x8a7f55, 0, 0, true);
+    rectLine(cr, 18, WIN_H - 13, uw, 1, uh ? 0xe6d58a : 0x8a7f55);
+    hot(H_UNINST, 14, WIN_H - 34, uw + 8, 26);
+  }
 }
 static void editBox(cairo_t* cr, bool focused, float x, float y, float w, float h) {
   rectBorder(cr, x, y, w, h, focused ? 0x6b5732 : 0x1e1e1e, 0x000000);
@@ -450,6 +466,49 @@ static void drawSetup(cairo_t* cr) {
   }
   if (btnId) button(cr, btnId, btnLabel, CX, cy + 4, textW(btnLabel, 14) + 48, 42);
 }
+static void drawUninstall(cairo_t* cr) {
+  rectLine(cr, 0, 0, WIN_W, WIN_H, 0x050403, 0xF2);
+  hot(H_VEIL, 0, 0, WIN_W, WIN_H, false);
+  const int BW = 640, BX = (WIN_W - BW) / 2, CX = BX + 7 + 22, CW = BW - 14 - 44;
+  std::vector<std::string> lines;
+  if (g_uninst == 1) {
+    lines.push_back("This removes everything the launcher added, so nothing is left behind:");
+    std::string d = logic::describePlan(g_plan), one;
+    for (char c : d) { if (c == '\n') { if (!one.empty()) lines.push_back(one); one.clear(); } else one += c; }
+    if (!one.empty()) lines.push_back(one);
+    lines.push_back("Your game, your add-ons and your characters are not touched.");
+  } else lines = g_uninstLog;
+  float y = 0;
+  for (auto& l : lines) y += para(cr, l, 0, 0, CW, 14, 0x606060, true) + 8;
+  bool askAI = g_uninst == 1 && appImagePath();
+  if (askAI) y += 24 + 8;
+  y += 12 + 42;
+  int BH = 8 + 12 + 17 + 12 + 1 + 20 + (int)y + 22 + 8;
+  int BY = (WIN_H - BH) / 2;
+  framedBox(cr, BX, BY, BW, BH);
+  hot(H_SETUPBOX, BX, BY, BW, BH, false);
+  text(cr, g_uninst == 1 ? "UNINSTALL" : "UNINSTALL FINISHED", BX + 7 + 20, BY + 8 + 12 + 8, 13, 0xc1b575, 0, 2.34f);
+  rectLine(cr, BX + 7, BY + 8 + 12 + 17 + 12, BW - 14, 1, 0x1e1e1e);
+  float cy = BY + 8 + 12 + 17 + 12 + 1 + 20;
+  for (size_t i = 0; i < lines.size(); i++) {
+    unsigned col = (g_uninst == 1 && i == 0) ? 0xc1b575 : 0x909090;
+    cy += para(cr, lines[i], CX, cy, CW, 14, col, false) + 8;
+  }
+  if (askAI) {
+    bool h = g_hover == H_UNINST_APPIMG;
+    rectBorder(cr, CX, cy + 2, 18, 18, h ? 0x6b5732 : 0x1e1e1e, 0x000000);
+    if (g_delAppImage) rectLine(cr, CX + 5, cy + 7, 8, 8, 0xc1b575);
+    text(cr, "Also delete the AppImage file itself", CX + 28, cy + 11, 14, 0xc1b575, 1);
+    hot(H_UNINST_APPIMG, CX, cy, 340, 24);
+    cy += 24 + 8;
+  }
+  cy += 12;
+  if (g_uninst == 1) {
+    button(cr, H_UNINST_GO, "REMOVE EVERYTHING", CX, cy, textW("REMOVE EVERYTHING", 14) + 48, 42);
+    float x2 = CX + textW("REMOVE EVERYTHING", 14) + 48 + 12;
+    button(cr, H_UNINST_CANCEL, "CANCEL", x2, cy, textW("CANCEL", 14) + 48, 42);
+  } else button(cr, H_UNINST_CLOSE, "CLOSE", CX, cy, textW("CLOSE", 14) + 48, 42);
+}
 static void drawWinButtons(cairo_t* cr) {
   const Img& mn = g_hover == H_MIN ? I.bminh : I.bmin;
   const Img& cl = g_hover == H_CLOSE ? I.bcloseh : I.bclose;
@@ -506,7 +565,8 @@ static void paintScene(cairo_t* cr) {
   drawFrame(cr);
   drawNav(cr);
   drawUnofficial(cr);
-  if (setupVisible()) drawSetup(cr);
+  if (g_uninst) drawUninstall(cr);
+  else if (setupVisible()) drawSetup(cr);
   else if (!g_user.empty() || g_loginOpen) drawLoginPanel(cr);
   drawWinButtons(cr);
 }
@@ -555,7 +615,7 @@ static void initVideo() {
 
 // ------------------------------------------------------------------- controls
 static void syncControls() {
-  bool show = g_setupDone && g_loginOpen && g_user.empty();
+  bool show = g_setupDone && !g_uninst && g_loginOpen && g_user.empty();
   gtk_widget_set_visible(g_edName, show);
   gtk_widget_set_visible(g_edPass, show);
 }
@@ -586,6 +646,7 @@ static bool setWow(const fs::path& p) {
   }
   g_wowExe = p;
   g_cfg.wowExe = p.u8string();
+  logic::addCreated(g_cfg, rep.created);
   saveCfg();
   g_setupPath = p.u8string();
   std::string info = "Login interface ready — ";
@@ -637,7 +698,10 @@ static void doLogin() {
   std::string name = trim(gtk_editable_get_text(GTK_EDITABLE(g_edName))), pw = gtk_editable_get_text(GTK_EDITABLE(g_edPass));
   if (name.empty() || pw.empty()) { redraw(); return; }
   std::string err;
-  if (!logic::writeCreds(g_wowExe, glueTemplate, name, pw, err)) {
+  std::vector<std::string> made;
+  bool wrote = logic::writeCreds(g_wowExe, glueTemplate, name, pw, err, &made);
+  logic::addCreated(g_cfg, made);
+  if (!wrote) {
     g_loginErr = "Could not update the game login file: " + err;
     redraw(); return;
   }
@@ -653,7 +717,9 @@ static void doLogout() {
   g_cfg.account.clear();
   saveCfg();
   std::string err;
-  logic::writeCreds(g_wowExe, glueTemplate, "", "", err);  // don't leave the password on disk
+  std::vector<std::string> made;
+  logic::writeCreds(g_wowExe, glueTemplate, "", "", err, &made);  // don't leave the password on disk
+  logic::addCreated(g_cfg, made); saveCfg();
   g_loginOpen = true;
   g_playErr.clear(); g_playState.clear();
   redraw();
@@ -668,6 +734,7 @@ static void doPlay() {
   if (!logic::ensureGlue(g_wowExe, glueTemplate, rep, err)) {
     g_playErr = "Client files unavailable: " + err; redraw(); return;
   }
+  if (!rep.created.empty()) { logic::addCreated(g_cfg, rep.created); saveCfg(); }
   auto pick = faugus::pickWow(faugus::findWowGames(), g_wowExe);
   faugus::Launch L = faugus::buildLaunch(g_wowExe, pick);
   if (!L.error.empty()) { g_playErr = L.error; redraw(); return; }
@@ -690,7 +757,9 @@ static void openFolder(bool addons) {
   fs::path dir = g_wowExe.parent_path();
   if (addons) {
     dir = logic::ciJoin(logic::ciJoin(dir, "Interface"), "AddOns");
-    std::error_code ec; fs::create_directories(dir, ec);
+    std::vector<std::string> made; std::string e;
+    logic::mkdirTracked(dir, &made, e);
+    if (!made.empty()) { logic::addCreated(g_cfg, made); saveCfg(); }
   }
   gchar* uri = g_filename_to_uri(dir.c_str(), nullptr, nullptr);
   GError* ge = nullptr;
@@ -700,12 +769,31 @@ static void openFolder(bool addons) {
   if (!ok) { setStatus("Could not open " + dir.u8string()); redraw(); }
 }
 
+static void openUninstall() {
+  g_plan = logic::makeUninstallPlan(g_cfg, glueTemplate, configPath().parent_path(), cacheDir());
+  g_delAppImage = false; g_uninst = 1; redraw();
+}
+static void doUninstall() {
+  g_uninstLog = logic::runUninstall(g_plan);
+  if (g_delAppImage && appImagePath()) {
+    if (unlink(appImagePath()) == 0) g_uninstLog.push_back(std::string("Removed ") + logic::homeShort(appImagePath()));
+    else g_uninstLog.push_back(std::string("Could not delete ") + appImagePath());
+  } else if (appImagePath()) g_uninstLog.push_back(std::string("The AppImage itself was kept: ") + logic::homeShort(appImagePath()));
+  g_uninstLog.push_back("All done. Nothing of the launcher is left on this computer" +
+                        std::string(g_delAppImage ? "." : " except the AppImage file — delete it whenever you like."));
+  g_noSave = true; g_uninst = 2; redraw();
+}
 static void onClick(int id) {
   switch (id) {
     case H_MIN: gtk_window_minimize(GTK_WINDOW(g_win)); break;
     case H_CLOSE: gtk_window_destroy(GTK_WINDOW(g_win)); break;
     case H_LOGO: openUrl(URL_HOME); break;
     case H_GITHUB: openUrl(URL_GITHUB); break;
+    case H_UNINST: openUninstall(); break;
+    case H_UNINST_APPIMG: g_delAppImage = !g_delAppImage; redraw(); break;
+    case H_UNINST_GO: doUninstall(); break;
+    case H_UNINST_CANCEL: g_uninst = 0; redraw(); break;
+    case H_UNINST_CLOSE: gtk_window_destroy(GTK_WINDOW(g_win)); break;
     case H_OPENGAME: openFolder(false); break;
     case H_OPENADDONS: openFolder(true); break;
     case H_ACCT: break;
@@ -895,7 +983,39 @@ static void loadStyle() {
   g_object_unref(p);
 }
 
+static int cliUninstall(bool yes, bool delAI) {
+  g_cfg = logic::loadConfig(configPath());
+  auto plan = logic::makeUninstallPlan(g_cfg, glueTemplate, configPath().parent_path(), cacheDir());
+  if (plan.empty() && !appImagePath()) { printf("Nothing to remove — the launcher has not changed anything on this computer.\n"); return 0; }
+  printf("Unofficial Warmane Launcher — uninstall\n\n%s\n", logic::describePlan(plan).c_str());
+  bool tty = isatty(0);
+  if (!yes) {
+    if (!tty) { fprintf(stderr, "Not a terminal: add --yes to confirm.\n"); return 2; }
+    printf("Remove all of this? [y/N] "); fflush(stdout);
+    char b[16] = {0}; if (!fgets(b, sizeof b, stdin) || (b[0] != 'y' && b[0] != 'Y')) { printf("Cancelled.\n"); return 1; }
+    if (appImagePath() && !delAI) {
+      printf("Also delete the AppImage (%s)? [y/N] ", appImagePath()); fflush(stdout);
+      char c[16] = {0}; if (fgets(c, sizeof c, stdin) && (c[0] == 'y' || c[0] == 'Y')) delAI = true;
+    }
+  }
+  for (auto& l : logic::runUninstall(plan)) printf("%s\n", l.c_str());
+  if (delAI && appImagePath()) printf(unlink(appImagePath()) == 0 ? "Removed %s\n" : "Could not delete %s\n", appImagePath());
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  {
+    bool un = false, yes = false, ai = false;
+    for (int i = 1; i < argc; i++) {
+      std::string a = argv[i];
+      if (a == "--uninstall") un = true; else if (a == "--yes" || a == "-y") yes = true; else if (a == "--delete-appimage") ai = true;
+      else if (a == "--help" || a == "-h") {
+        printf("Unofficial Warmane Launcher\n  --uninstall [--yes] [--delete-appimage]   remove everything the launcher created\n");
+        return 0;
+      }
+    }
+    if (un) return cliUninstall(yes, ai);
+  }
   g_set_prgname("unofficial-warmane-launcher");
   g_set_application_name(APP_TITLE);
   registerFont();
