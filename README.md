@@ -1,4 +1,5 @@
 # Unofficial Warmane Launcher
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M8K423K344)
 
 A small, free launcher for the World of Warcraft **3.3.5a** client, made for players of the Warmane server.
 It finds your game, fills in the game's own login screen for you, and starts `Wow.exe` with one click.
